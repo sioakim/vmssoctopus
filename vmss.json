@@ -1,0 +1,474 @@
+{
+   "$schema":"https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+   "contentVersion":"1.0.0.0",
+   "parameters":{
+      "vmsStackName":{
+         "type":"string",
+         "metadata":{
+            "description":"Scale Set name, also used in this template as a base for naming resources (hence limited to 9 characters or less)."
+         },
+         "minLength":3,
+         "maxLength":9
+      },
+      "vmsInstanceCount":{
+         "defaultValue":2,
+         "type":"int",
+         "metadata":{
+            "description":"The number of virtual machine instances within this scale set."
+         },
+         "minValue":1,
+         "maxValue":10
+      },
+      "location":{
+         "defaultValue":"West Europe",
+         "allowedValues":[
+            "US East",
+            "US West",
+            "West US",
+            "East US",
+            "West Europe",
+            "East Asia",
+            "Southeast Asia",
+            "Australia East",
+            "Australia Southeast"
+         ],
+         "type":"string",
+         "metadata":{
+            "description":"Azure Region"
+         }
+      },
+      "storageAccountType":{
+         "defaultValue":"Standard_LRS",
+         "allowedValues":[
+            "Standard_LRS",
+            "Premium_LRS"
+         ],
+         "type":"string",
+         "metadata":{
+            "description":"Type of the Storage Account"
+         }
+      },
+      "vmSize":{
+         "defaultValue":"Standard_D8s_v3",
+         "allowedValues":[
+            "Standard_A0",
+            "Standard_A1",
+            "Standard_A2",
+            "Standard_A3",
+            "Standard_D8s_v3"
+         ],
+         "type":"string",
+         "metadata":{
+            "description":"Size of the VM"
+         }
+      },
+      "adminUsername":{
+         "type":"string",
+		 "defaultValue":"vmssadmin",
+         "metadata":{
+            "description":"Admin username"
+         }
+      },
+      "adminPassword":{
+         "type":"securestring",
+         "metadata":{
+            "description":"Admin password"
+         }
+      },
+      "octopusApiKey":{
+         "type":"string",
+		 "defaultValue":"API-I3IQOOVUEXWHPJZKGIY8IRAYG4",
+         "metadata":{
+            "description":"API key to talk to Octopus Deploy server with."
+         }
+      },
+      "octopusServerUrl":{
+         "type":"string",
+		 "defaultValue":"http://sioakim-octopus.westeurope.cloudapp.azure.com/",
+         "metadata":{
+            "description":"URL of Octopus Deploy server."
+         }
+      },
+      "octopusEnvironments":{
+         "type":"string",
+		 "defaultValue":"Development",
+         "metadata":{
+            "description":"List of environments to register the tentacle in."
+         }
+      },
+      "octopusRoles":{
+         "type":"string",
+		 "defaultValue":"Web",
+         "metadata":{
+            "description":"List of roles to register the tentacle with."
+         }
+      },
+      "octopusMachinePolicy":{
+         "type":"string",
+		 "defaultValue":"Cleanup",
+         "metadata":{
+            "description":"The Octopus Deploy Machine Policy to assign to the new tentacle."
+         }
+      },
+      "octopusListenPort":{
+         "defaultValue":"10933",
+         "type":"string",
+         "metadata":{
+            "description":"List of environments to register the tentacle in."
+         }
+      }
+   },
+   "variables":{
+      "loadBalancerName":"[concat(parameters('vmsStackName'), 'lb')]",
+      "loadBalancerResourceId":"[resourceId('Microsoft.Network/loadBalancers', variables('loadBalancerName'))]",
+      "loadBalancerProbeId":"[concat(variables('loadBalancerResourceId'),'/probes/tcpProbe')]",
+      "frontendIPConfigurationId":"[concat(variables('loadBalancerResourceId'), '/frontendIPConfigurations/loadBalancerFrontEnd')]",
+      "backendIPConfigurationId":"[concat(variables('loadBalancerResourceId'), '/backendAddressPools/LoadBalancerBackEnd')]",
+      "nicName":"[concat(parameters('vmsStackName'), 'nic')]",
+      "virtualNetworkName":"[concat(parameters('vmsStackName'), 'vnet')]",
+      "virtualNetworkAddressPrefix":"10.0.0.0/16",
+      "subnet1Name":"[concat(parameters('vmsStackName'), 'subnet')]",
+      "subnet1Prefix":"10.0.0.0/24",
+      "rdpStartPort":50001,
+      "rdpEndPort":50010,
+      "rdpBackendPort":3389,
+      "octopusStartPort":10001,
+      "octopusEndPort":10010,
+      "octopusBackendPort":"[parameters('octopusListenPort')]",
+      "publicIPAddressName":"[concat(parameters('vmsStackName'), 'pip')]",
+      "publicIPAddressResourceId":"[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIPAddressName'))]",
+      "osType":{
+         "publisher":"MicrosoftWindowsServer",
+         "offer":"WindowsServer",
+         "sku":"2012-R2-Datacenter",
+         "version":"latest"
+      },
+      "uniqueStringArray":[
+         "[toLower(concat(parameters('vmsStackName'), uniqueString(concat(resourceGroup().id, '0'))))]",
+         "[toLower(concat(parameters('vmsStackName'), uniqueString(concat(resourceGroup().id, '1'))))]",
+         "[toLower(concat(parameters('vmsStackName'), uniqueString(concat(resourceGroup().id, '2'))))]",
+         "[toLower(concat(parameters('vmsStackName'), uniqueString(concat(resourceGroup().id, '3'))))]",
+         "[toLower(concat(parameters('vmsStackName'), uniqueString(concat(resourceGroup().id, '4'))))]"
+      ],
+      "vhdContainerName":"[concat(parameters('vmsStackName'), 'vhd')]"
+   },
+   "resources":[
+      {
+         "copy":{
+            "name":"storageLoop",
+            "count":5
+         },
+         "type":"Microsoft.Storage/storageAccounts",
+         "name":"[variables('uniqueStringArray')[copyIndex()]]",
+         "location":"[parameters('location')]",
+         "apiVersion":"2015-06-15",
+         "properties":{
+            "accountType":"[parameters('storageAccountType')]"
+         }
+      },
+      {
+         "type":"Microsoft.Network/publicIPAddresses",
+         "name":"[variables('publicIPAddressName')]",
+         "apiVersion":"2015-06-15",
+         "location":"[parameters('location')]",
+         "properties":{
+            "publicIPAllocationMethod":"Dynamic",
+            "dnsSettings":{
+               "domainNameLabel":"[parameters('vmsStackName')]"
+            }
+         }
+      },
+      {
+         "type":"Microsoft.Network/loadBalancers",
+         "name":"[variables('loadBalancerName')]",
+         "apiVersion":"2015-06-15",
+         "location":"[resourceGroup().location]",
+         "dependsOn":[
+            "[concat('Microsoft.Network/publicIPAddresses/', variables('publicIPAddressName'))]",
+            "[concat('Microsoft.Network/virtualNetworks/', variables('virtualNetworkName'))]"
+         ],
+         "properties":{
+            "frontendIPConfigurations":[
+               {
+                  "name":"LoadBalancerFrontEnd",
+                  "properties":{
+                     "publicIPAddress":{
+                        "id":"[variables('publicIPAddressResourceId')]"
+                     }
+                  }
+               }
+            ],
+            "backendAddressPools":[
+               {
+                  "name":"LoadBalancerBackEnd"
+               }
+            ],
+            "loadBalancingRules":[
+               {
+                  "name":"HTTPTraffic",
+                  "properties":{
+                     "frontendIPConfiguration":{
+                        "id":"[variables('frontendIPConfigurationId')]"
+                     },
+                     "backendAddressPool":{
+                        "id":"[variables('backendIPConfigurationId')]"
+                     },
+                     "protocol":"Tcp",
+                     "frontendPort":80,
+                     "backendPort":80,
+                     "enableFloatingIP":false,
+                     "idleTimeoutInMinutes":5,
+                     "probe":{
+                        "id":"[variables('loadBalancerProbeId')]"
+                     }
+                  }
+               }
+            ],
+            "probes":[
+               {
+                  "name":"tcpProbe",
+                  "properties":{
+                     "protocol":"Tcp",
+                     "port":80,
+                     "intervalInSeconds":5,
+                     "numberOfProbes":2
+                  }
+               }
+            ],
+            "inboundNatPools":[
+               {
+                  "name":"RDPTraffic",
+                  "properties":{
+                     "frontendIPConfiguration":{
+                        "id":"[variables('frontendIPConfigurationId')]"
+                     },
+                     "protocol":"tcp",
+                     "frontendPortRangeStart":"[variables('rdpStartPort')]",
+                     "frontendPortRangeEnd":"[variables('rdpEndPort')]",
+                     "backendPort":"[variables('rdpBackendPort')]"
+                  }
+               },
+               {
+                  "name":"OctopusTraffic",
+                  "properties":{
+                     "frontendIPConfiguration":{
+                        "id":"[variables('frontendIPConfigurationId')]"
+                     },
+                     "protocol":"tcp",
+                     "frontendPortRangeStart":"[variables('octopusStartPort')]",
+                     "frontendPortRangeEnd":"[variables('octopusEndPort')]",
+                     "backendPort":"[variables('octopusBackendPort')]"
+                  }
+               }
+            ]
+         }
+      },
+      {
+         "type":"Microsoft.Network/virtualNetworks",
+         "name":"[variables('virtualNetworkName')]",
+         "apiVersion":"2015-06-15",
+         "location":"[parameters('location')]",
+         "properties":{
+            "addressSpace":{
+               "addressPrefixes":[
+                  "[variables('virtualNetworkAddressPrefix')]"
+               ]
+            },
+            "subnets":[
+               {
+                  "name":"[variables('subnet1Name')]",
+                  "properties":{
+                     "addressPrefix":"[variables('subnet1Prefix')]"
+                  }
+               }
+            ]
+         }
+      },
+      {
+         "type":"Microsoft.Compute/virtualMachineScaleSets",
+         "name":"[parameters('vmsStackName')]",
+         "location":"[parameters('location')]",
+         "apiVersion":"2015-06-15",
+         "dependsOn":[
+            "storageLoop",
+            "[concat('Microsoft.Network/loadBalancers/', variables('loadBalancerName'))]",
+            "[concat('Microsoft.Network/virtualNetworks/', variables('virtualNetworkName'))]",
+            "[concat('Microsoft.Network/loadBalancers/', variables('loadBalancerName'))]"
+         ],
+         "sku":{
+            "name":"[parameters('vmSize')]",
+            "tier":"Standard",
+            "capacity":"[parameters('vmsInstanceCount')]"
+         },
+         "properties":{
+            "upgradePolicy":{
+               "mode":"Manual"
+            },
+            "virtualMachineProfile":{
+               "storageProfile":{
+                  "osDisk":{
+                     "vhdContainers":[
+                        "[concat('https://', variables('uniqueStringArray')[0], '.blob.core.windows.net/', variables('vhdContainerName'))]",
+                        "[concat('https://', variables('uniqueStringArray')[1], '.blob.core.windows.net/', variables('vhdContainerName'))]",
+                        "[concat('https://', variables('uniqueStringArray')[2], '.blob.core.windows.net/', variables('vhdContainerName'))]",
+                        "[concat('https://', variables('uniqueStringArray')[3], '.blob.core.windows.net/', variables('vhdContainerName'))]",
+                        "[concat('https://', variables('uniqueStringArray')[4], '.blob.core.windows.net/', variables('vhdContainerName'))]"
+                     ],
+                     "name":"[concat(parameters('vmsStackName'), 'osdisk')]",
+                     "caching":"ReadOnly",
+                     "createOption":"FromImage"
+                  },
+                  "imageReference":"[variables('osType')]"
+               },
+               "osProfile":{
+                  "computerNamePrefix":"[parameters('vmsStackName')]",
+                  "adminUsername":"[parameters('adminUsername')]",
+                  "adminPassword":"[parameters('adminPassword')]"
+               },
+               "networkProfile":{
+                  "networkInterfaceConfigurations":[
+                     {
+                        "name":"[variables('nicName')]",
+                        "properties":{
+                           "primary":true,
+                           "ipConfigurations":[
+                              {
+                                 "name":"[concat(parameters('vmsStackName'), 'ipconfig')]",
+                                 "properties":{
+                                    "subnet":{
+                                       "id":"[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Network/virtualNetworks/', variables('virtualNetworkName'), '/subnets/', variables('subnet1Name'))]"
+                                    },
+                                    "loadBalancerBackendAddressPools":[
+                                       {
+                                          "id":"[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Network/loadBalancers/', variables('loadBalancerName'), '/backendAddressPools/LoadBalancerBackEnd')]"
+                                       }
+                                    ],
+                                    "loadBalancerInboundNatPools":[
+                                       {
+                                          "id":"[concat('/subscriptions/', subscription().subscriptionId,'/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Network/loadBalancers/', variables('loadBalancerName'), '/inboundNatPools/', 'RDPTraffic')]"
+                                       },
+                                       {
+                                          "id":"[concat('/subscriptions/', subscription().subscriptionId,'/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Network/loadBalancers/', variables('loadBalancerName'), '/inboundNatPools/', 'OctopusTraffic')]"
+                                       }
+                                    ]
+                                 }
+                              }
+                           ]
+                        }
+                     }
+                  ]
+               },
+               "extensionProfile":{
+                  "extensions":[
+                     {
+                        "name":"WebServerPrerequisites",
+                        "properties":{
+                           "publisher":"Microsoft.Compute",
+                           "type":"CustomScriptExtension",
+                           "typeHandlerVersion":"1.7",
+                           "settings":{
+                              "fileUris":[
+                                 "https://chocolatey.org/install.ps1",
+                                 "https://github.com/sioakim/vmssoctopus/raw/master/Install-OctopusDSC.ps1",
+                                 "https://github.com/sioakim/vmssoctopus/raw/master/Install-WebServerPrerequisites.ps1"
+                              ],
+                              "commandToExecute":"[concat('powershell.exe -ExecutionPolicy Unrestricted -File Install-WebServerPrerequisites.ps1')]"
+                           }
+                        }
+                     },
+                     {
+                        "name":"WebServerDSC",
+                        "properties":{
+                           "publisher":"Microsoft.Powershell",
+                           "type":"DSC",
+                           "typeHandlerVersion":"2.9",
+                           "autoUpgradeMinorVersion":true,
+                           "settings":{
+                              "ModulesUrl":"https://github.com/sioakim/vmssoctopus/raw/master/WebServerConfig.ps1.zip",
+                              "SasToken":"",
+                              "ConfigurationFunction":"WebServerConfig.ps1\\WebServerConfig",
+                              "Properties":{
+                                 "ApiKey":"[parameters('octopusApiKey')]",
+                                 "OctopusServerUrl":"[parameters('octopusServerUrl')]",
+                                 "Environments":"[parameters('octopusEnvironments')]",
+                                 "Roles":"[parameters('octopusRoles')]",
+                                 "MachinePolicy":"[parameters('octopusMachinePolicy')]",
+                                 "ListenPort":"[parameters('octopusListenPort')]"
+                              }
+                           }
+                        }
+                     }
+                  ]
+               }
+            }
+         }
+      },
+      {
+         "type":"Microsoft.ServiceBus/namespaces",
+         "apiVersion":"2015-08-01",
+         "name":"[concat(parameters('vmsStackName'),'as1')]",
+         "location":"[resourceGroup().location]",
+         "dependsOn":[
+            "[concat('Microsoft.Compute/virtualMachineScaleSets/',parameters('vmsStackName'))]"
+         ],
+         "tags":{
+            "displayName":"Auto Scaling Settings"
+         },
+         "properties":{
+            "enabled":true,
+            "name":"[concat(parameters('vmsStackName'),'as1')]",
+            "profiles":[
+               {
+                  "name":"Profile1",
+                  "capacity":{
+                     "minimum":"2",
+                     "maximum":"2",
+                     "default":"2"
+                  },
+                  "rules":[
+                     {
+                        "metricTrigger":{
+                           "metricName":"Percentage CPU",
+                           "metricNamespace":"",
+                           "metricResourceUri":"[concat('/subscriptions/',subscription().subscriptionId,'/resourceGroups/',resourceGroup().name,'/providers/Microsoft.Compute/virtualMachineScaleSets/',parameters('vmsStackName'))]",
+                           "timeGrain":"PT1M",
+                           "statistic":"Average",
+                           "timeWindow":"PT15M",
+                           "timeAggregation":"Average",
+                           "operator":"GreaterThan",
+                           "threshold":60.0
+                        },
+                        "scaleAction":{
+                           "direction":"Increase",
+                           "type":"ChangeCount",
+                           "value":"1",
+                           "cooldown":"PT15M"
+                        }
+                     },
+                     {
+                        "metricTrigger":{
+                           "metricName":"Percentage CPU",
+                           "metricNamespace":"",
+                           "metricResourceUri":"[concat('/subscriptions/',subscription().subscriptionId,'/resourceGroups/',resourceGroup().name,'/providers/Microsoft.Compute/virtualMachineScaleSets/',parameters('vmsStackName'))]",
+                           "timeGrain":"PT1M",
+                           "statistic":"Average",
+                           "timeWindow":"PT15M",
+                           "timeAggregation":"Average",
+                           "operator":"LessThan",
+                           "threshold":40.0
+                        },
+                        "scaleAction":{
+                           "direction":"Decrease",
+                           "type":"ChangeCount",
+                           "value":"1",
+                           "cooldown":"PT15M"
+                        }
+                     }
+                  ]
+               }
+            ],
+            "targetResourceUri":"[concat('/subscriptions/',subscription().subscriptionId,'/resourceGroups/', resourceGroup().name,'/providers/Microsoft.Compute/virtualMachineScaleSets/',parameters('vmsStackName'))]"
+         }
+      }
+   ]
+}
